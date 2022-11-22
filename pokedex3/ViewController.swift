@@ -1,0 +1,207 @@
+//
+//  ViewController.swift
+//  pokedex3
+//
+//  Created by Kirk Abbott on 11/21/22.
+//
+
+import UIKit
+
+class ViewController: UIViewController {
+    
+
+lazy var pokemonTableView : UITableView = {
+    let tableView = UITableView(frame: .zero)
+    tableView.translatesAutoresizingMaskIntoConstraints = false
+    tableView.backgroundColor = .systemGray5
+    tableView.dataSource = self
+    tableView.delegate = self
+    tableView.prefetchDataSource = self
+    tableView.register(PokemonTableViewCell.self, forCellReuseIdentifier: "PokemonCell")
+    
+    return tableView
+}()
+
+var network : NetworkSessionManager
+var currentPage : PageResult?
+var pokemons : [NameLink] = []
+let url = URL(string: "https://pokeapi.co/api/v2/pokemon")
+let margin = 4
+
+init(network: NetworkSessionManager = NetworkSessionManager()) {
+    self.network = network
+    
+    super.init(nibName: nil, bundle: nil)
+}
+
+required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+}
+
+override func viewDidLoad() {
+    super.viewDidLoad()
+    self.createUI()
+    self.requestNextPage()
+    
+}
+
+private func requestNextPage(){
+    let pageUrl : URL?
+    if let currentPage = self.currentPage{
+        pageUrl = currentPage.next
+    }
+    else{
+        pageUrl = self.url
+    }
+    guard let pageUrl = pageUrl else {
+        return
+    }
+    self.network.fetchPageResult(with: pageUrl){
+        (resultPage : Result<PageResult, NetworkError>) in
+        switch resultPage{
+        case .success(let page):
+            self.currentPage = page
+            self.pokemons.append(contentsOf: page.results)
+            DispatchQueue.main.async {
+                self.pokemonTableView.reloadData()
+            }
+        case .failure(let error):
+            print(error)
+        }
+    }
+}
+
+private func createUI(){
+    self.title = "Pokemons"
+    self.view.backgroundColor = .white
+    self.view.addSubview(pokemonTableView)
+    
+    self.pokemonTableView.topAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.topAnchor, constant: 8).isActive = true
+    self.pokemonTableView.bottomAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.bottomAnchor, constant: -8).isActive = true
+    self.pokemonTableView.leadingAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.leadingAnchor, constant: 8).isActive = true
+    self.pokemonTableView.trailingAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.trailingAnchor, constant: -8).isActive = true
+    
+    }
+
+}
+
+
+
+extension ViewController : UITableViewDataSource {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+            self.pokemons.count
+    }
+    
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        guard indexPath.row<=150 else{return UITableViewCell()}
+        guard let cell = tableView.dequeueReusableCell(withIdentifier: "PokemonCell", for: indexPath) as? PokemonTableViewCell else{
+            return UITableViewCell()
+        }
+        cell.nameLabel.text = self.pokemons[indexPath.row].name
+        guard let tempUrl = self.pokemons[indexPath.row].url else{
+            return UITableViewCell()
+        }
+        
+        self.network.fetchPageResult(with: tempUrl){
+            (result : Result<Pokemon, NetworkError>) in
+            switch result{
+            case .success(let result) :
+                var types = "|"
+                result.types.forEach(){
+                    type in
+                    types += " \(type.type.name) |"
+                }
+                guard let pictureUrl = result.sprites.frontDefault else{
+                    return
+                }
+                self.network.fetchRawData(url: pictureUrl){
+                    picture in
+                    guard let picture = picture else{
+                        return
+                    }
+                    DispatchQueue.main.async {
+                        
+                        cell.typeLabel.text = types
+                        cell.pokemonImageView.image = UIImage(data: picture)
+                        
+                        
+                    }
+                    
+                }
+            case .failure(let err):
+                print(err)
+            }
+        }
+
+        return cell
+    }
+    
+    
+}
+
+
+
+
+extension ViewController: UITableViewDelegate{
+func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+    let VC = PokemonDetailController()
+    guard let cell : PokemonTableViewCell = tableView.cellForRow(at: indexPath) as? PokemonTableViewCell else{
+        return
+    }
+    guard let name = cell.nameLabel.text else{
+        return
+    }
+    guard name == self.pokemons[indexPath.row].name else {
+        return
+    }
+    guard let pokemonUrl = URL(string: "https://pokeapi.co/api/v2/pokemon/\(name)") else{
+        return
+    }
+    self.network.fetchPageResult(with: pokemonUrl){
+        (result : Result<Pokemon, NetworkError>) in
+        DispatchQueue.main.async {
+            switch result{
+            case .success(let result) :
+                VC.title = result.name
+                
+                let abilities = result.abilities.compactMap { Abilities in
+                    Abilities.ability.name
+                }
+                VC.abilitiesLabel.text = "Abilities: \(abilities)"
+//                let moves = result.moves.compactMap { Moves in
+//                    Moves.move.name
+//                }
+//                VC.moveLabel.text = "Moves: \(moves)"
+                if let imgUrl = result.sprites.versions.generationV?.blackWhite.animated.frontShiny
+                {
+                    self.network.fetchRawData(url: imgUrl){
+                        data in
+                        guard let data = data else{
+                            return
+                        }
+                        DispatchQueue.main.async {
+                            VC.pokemonImage.image = UIImage(data: data)
+                        }
+                    }
+                }else{
+                    VC.pokemonImage.image = cell.pokemonImageView.image
+                }
+            case .failure(let err):
+                print(err)
+            }
+        }
+    }
+    self.navigationController?.pushViewController(VC, animated: true)
+}
+}
+
+extension ViewController : UITableViewDataSourcePrefetching{
+func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
+    let lastIndexPath = IndexPath(row: self.pokemons.count - 1, section: 0)
+    guard indexPaths.contains(lastIndexPath), self.pokemons.count < 152 else { return }
+    self.requestNextPage()
+}
+}
+
+
+
